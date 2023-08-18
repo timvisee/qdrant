@@ -19,7 +19,7 @@ use crate::common::stoppable_task::{spawn_stoppable, StoppableTaskHandle};
 use crate::operations::shared_storage_config::SharedStorageConfig;
 use crate::operations::types::{CollectionError, CollectionResult};
 use crate::operations::CollectionUpdateOperations;
-use crate::shards::local_shard::LockedWal;
+use crate::shards::local_shard::{LockedWal, OptimizerDescription};
 use crate::wal::WalError;
 
 pub type Optimizer = dyn SegmentOptimizer + Sync + Send;
@@ -220,12 +220,21 @@ impl UpdateHandler {
                     for sid in &nsi {
                         scheduled_segment_ids.insert(*sid);
                     }
-                    let callback_cloned = callback.clone();
+                    let callback = callback.clone();
+
+                    // TODO: do something with this
+                    let desc = OptimizerDescription {
+                        name: optim.as_ref().name().into(),
+                        segment_ids: nsi.clone(),
+                        status: crate::shards::local_shard::OptimizerDescriptionStatus::Busy,
+                        start_at: None,
+                        end_at: None,
+                    };
 
                     handles.push(spawn_stoppable(move |stopped| {
                         match optim.as_ref().optimize(segs.clone(), nsi, stopped) {
                             Ok(result) => {
-                                callback_cloned(result); // Perform some actions when optimization if finished
+                                callback(result); // Perform some actions when optimization if finished
                                 result
                             }
                             Err(error) => match error {

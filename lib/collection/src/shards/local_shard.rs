@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::thread;
 
 use arc_swap::ArcSwap;
+use chrono::{DateTime, Utc};
 use indicatif::{ProgressBar, ProgressStyle};
 use itertools::Itertools;
 use parking_lot::{Mutex as ParkingMutex, RwLock};
@@ -27,7 +28,7 @@ use uuid::Uuid;
 use wal::{Wal, WalOptions};
 
 use crate::collection_manager::collection_updater::CollectionUpdater;
-use crate::collection_manager::holders::segment_holder::{LockedSegment, SegmentHolder};
+use crate::collection_manager::holders::segment_holder::{LockedSegment, SegmentHolder, SegmentId};
 use crate::config::CollectionConfig;
 use crate::operations::shared_storage_config::SharedStorageConfig;
 use crate::operations::types::{
@@ -58,7 +59,55 @@ pub struct LocalShard {
     pub(super) update_sender: ArcSwap<Sender<UpdateSignal>>,
     pub(super) path: PathBuf,
     pub(super) optimizers: Arc<Vec<Arc<Optimizer>>>,
+    // TODO: use this?
+    pub(super) optimizer_descriptions: Arc<Vec<()>>,
     update_runtime: Handle,
+}
+
+pub struct OptimizerDescription {
+    pub name: String,
+    pub segment_ids: Vec<SegmentId>,
+    pub start_at: DateTime<Utc>,
+    pub state: Arc<ParkingMutex<OptimizerDescriptionState>>,
+}
+
+#[derive(Default)]
+pub struct OptimizerDescriptionState {
+    pub status: OptimizerDescriptionStatus,
+    pub end_at: Option<DateTime<Utc>>,
+}
+
+impl OptimizerDescription {
+    pub fn start(name: impl Into<String>, segment_ids: Vec<SegmentId>) -> Self {
+        Self {
+            name: name.into(),
+            segment_ids,
+            state: Default::default(),
+            start_at: Utc::now(),
+        }
+    }
+
+    pub fn update(&self, status: OptimizerDescriptionStatus) {
+        let mut state = self.state.lock();
+        state.status = status;
+        match status {
+            OptimizerDescriptionStatus::Busy => {}
+            OptimizerDescriptionStatus::Done
+            | OptimizerDescriptionStatus::Cancelled(_)
+            | OptimizerDescriptionStatus::Error(_) => {
+                state.end_at.replace(Utc::now());
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+pub enum OptimizerDescriptionStatus {
+    #[default]
+    Busy,
+    Done,
+    Cancelled(String),
+    Error(String),
 }
 
 /// Shard holds information about segments and WAL.
@@ -137,6 +186,7 @@ impl LocalShard {
             path: shard_path.to_owned(),
             update_runtime,
             optimizers,
+            optimizer_descriptions: Default::default(),
         }
     }
 
